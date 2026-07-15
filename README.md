@@ -32,7 +32,27 @@ Create a chat session and ask questions against all indexed material or a select
 
 ![Ask workspace with evidence citations](docs/images/demo-ask.png)
 
+### 3) Match
 
+Choose one fully indexed resume and one fully indexed job description to run a deterministic comparison.
+
+- Readiness checks prevent analysis on incomplete uploads
+- Overall score and category breakdown
+- Matched, missing, and weak skills with source evidence
+- Evidence-backed recommendations
+ 
+![Match workspace](docs/images/demo-match.png)
+
+### 4) Dashboard
+
+Review the local workspace's operational and analysis signals.
+
+- Files, chat sessions/messages, analyses, and average match score
+- Index health and daily match trend
+- Top missing skills and recent files/chats/analyses
+- Intentional file-type filtering for file and analysis data; chat metrics remain workspace-wide
+
+![Operations dashboard](docs/images/demo-dashboard.png)
 
 ## Tech Stack
 
