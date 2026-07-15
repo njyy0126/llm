@@ -40,7 +40,7 @@ Choose one fully indexed resume and one fully indexed job description to run a d
 - Overall score and category breakdown
 - Matched, missing, and weak skills with source evidence
 - Evidence-backed recommendations
-
+ 
 ![Match workspace](docs/images/demo-match.png)
 
 ### 4) Dashboard
