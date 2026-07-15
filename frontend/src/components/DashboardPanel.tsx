@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type DashboardSummary = {
   kpis: {
@@ -73,7 +73,7 @@ export default function DashboardPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     const summaryParams = new URLSearchParams();
     summaryParams.set("days", String(days));
     if (fileType) {
@@ -82,11 +82,20 @@ export default function DashboardPanel() {
 
     const trendParams = new URLSearchParams();
     trendParams.set("days", String(days));
+    if (fileType) {
+      trendParams.set("fileType", fileType);
+    }
+
+    const skillGapParams = new URLSearchParams();
+    skillGapParams.set("limit", "10");
+    if (fileType) {
+      skillGapParams.set("fileType", fileType);
+    }
 
     const [summaryRes, trendRes, gapsRes] = await Promise.all([
       fetch(`/api/dashboard/summary?${summaryParams.toString()}`),
       fetch(`/api/dashboard/match-trend?${trendParams.toString()}`),
-      fetch("/api/dashboard/skill-gaps?limit=10"),
+      fetch(`/api/dashboard/skill-gaps?${skillGapParams.toString()}`),
     ]);
 
     const [summaryPayload, trendPayload, gapsPayload] = (await Promise.all([
@@ -108,7 +117,7 @@ export default function DashboardPanel() {
     setSummary(summaryPayload.data as DashboardSummary);
     setTrend(trendPayload.data as MatchTrend);
     setSkillGaps(gapsPayload.data as SkillGapData);
-  };
+  }, [days, fileType]);
 
   useEffect(() => {
     const run = async () => {
@@ -123,7 +132,7 @@ export default function DashboardPanel() {
       }
     };
     void run();
-  }, [days, fileType]);
+  }, [loadDashboardData]);
 
   const maxTrendCount = useMemo(() => {
     if (!trend || trend.points.length === 0) return 1;
@@ -148,7 +157,7 @@ export default function DashboardPanel() {
           </select>
         </label>
         <label>
-          File type filter (summary/files)
+          File type filter (files and analyses; chats remain global)
           <select
             value={fileType}
             onChange={(event) =>
@@ -166,7 +175,7 @@ export default function DashboardPanel() {
         </button>
       </div>
 
-      {error && <p className="error-text">{error}</p>}
+      {error && <p className="notice error-text" role="alert" aria-live="assertive">{error}</p>}
 
       {!summary || !trend || !skillGaps ? (
         <p className="meta">{loading ? "Loading dashboard..." : "Dashboard data unavailable."}</p>
@@ -217,20 +226,30 @@ export default function DashboardPanel() {
               {trend.points.length === 0 ? (
                 <p className="meta">No analyses in this period.</p>
               ) : (
-                <div className="mini-chart">
-                  {trend.points.map((point) => (
-                    <div key={point.day} className="mini-chart-col">
-                      <div
-                        className="mini-chart-bar"
-                        style={{
-                          height: `${Math.max(10, (point.analysisCount / maxTrendCount) * 100)}px`,
-                        }}
-                        title={`${point.day}: ${point.analysisCount} analyses, avg ${point.averageScore}`}
-                      />
-                      <span>{point.day.slice(5)}</span>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <p className="meta" id="trend-summary">
+                    {trend.points.length} daily data points. Use the data table for exact analysis counts and average match scores.
+                  </p>
+                  <div className="mini-chart" role="img" aria-describedby="trend-summary">
+                    {trend.points.map((point) => (
+                      <div key={point.day} className="mini-chart-col" aria-hidden="true">
+                        <div
+                          className="mini-chart-bar"
+                          style={{ height: `${Math.max(10, (point.analysisCount / maxTrendCount) * 100)}px` }}
+                        />
+                        <span>{point.day.slice(5)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <details className="visual-data-details">
+                    <summary>View match trend data table</summary>
+                    <table>
+                      <caption>Daily match analysis activity</caption>
+                      <thead><tr><th scope="col">Date</th><th scope="col">Analyses</th><th scope="col">Average score</th></tr></thead>
+                      <tbody>{trend.points.map((point) => <tr key={`trend-${point.day}`}><td>{point.day}</td><td>{point.analysisCount}</td><td>{point.averageScore}</td></tr>)}</tbody>
+                    </table>
+                  </details>
+                </>
               )}
             </div>
 
@@ -239,11 +258,11 @@ export default function DashboardPanel() {
               {skillGaps.items.length === 0 ? (
                 <p className="meta">No missing skill data yet.</p>
               ) : (
-                <ul className="gap-list">
+                <><p className="meta">The list reports each missing skill and the number of analyses where it appeared.</p><ul className="gap-list">
                   {skillGaps.items.map((item) => (
                     <li key={`gap-${item.skill}`}>
                       <span>{item.skill}</span>
-                      <div className="gap-meter">
+                      <div className="gap-meter" aria-hidden="true">
                         <div
                           className="gap-meter-fill"
                           style={{ width: `${(item.frequency / maxGapFrequency) * 100}%` }}
@@ -252,7 +271,7 @@ export default function DashboardPanel() {
                       <strong>{item.frequency}</strong>
                     </li>
                   ))}
-                </ul>
+                </ul></>
               )}
             </div>
           </div>

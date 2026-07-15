@@ -2,15 +2,24 @@ import { Types } from "mongoose";
 import { z } from "zod";
 import { env } from "../../config/env";
 import { IngestedFileModel } from "../../models/IngestedFile";
-import { TextChunkModel } from "../../models/TextChunk";
+import { JdRequirementExtractionModel } from "../../models/JdRequirementExtraction";
 import { MatchAnalysisModel } from "../../models/MatchAnalysis";
+import { TextChunkModel } from "../../models/TextChunk";
+import { VectorIndexModel } from "../../models/VectorIndex";
 import { AppError } from "../../utils/AppError";
 import { retrieveSimilarChunks, type RetrievedChunk } from "../retrievalService";
 import {
-  extractRequiredSkillsFromJd,
+  extractDeterministicRequirementGroups,
   extractSkillEvidence,
   type EvidenceRef,
 } from "./skillExtractor";
+import {
+  createJdRequirementExtractionService,
+  createQwenJdRequirementExtractor,
+  type CachedJdRequirementExtraction,
+  type ExtractedSkill,
+  type JdRequirementExtractionResult,
+} from "./jdRequirementExtractionService";
 import { buildRecommendations } from "./recommendationService";
 import { scoreMatch } from "./matchScorer";
 
@@ -31,48 +40,172 @@ const dedupeChunks = (chunks: RetrievedChunk[]): RetrievedChunk[] => {
   return [...map.values()].sort((a, b) => b.score - a.score);
 };
 
+type AnalysisFile = {
+  id: string;
+  originalName: string;
+  documentType: "resume" | "job_description" | "other";
+  indexingStatus: "not_started" | "partial" | "indexed";
+  chunkCount: number;
+  indexedChunkCount: number;
+};
+
+type SkillItem = { skill: string; evidence: EvidenceRef[] };
+type RequirementSkillItem = SkillItem & {
+  priority: "preferred" | "nice_to_have";
+  requirementEvidence: string;
+};
+type MatchAnalysisCreateData = {
+  resumeFileId: string;
+  jdFileId: string;
+  overallMatchScore: number;
+  confidence: ReturnType<typeof scoreMatch>["confidence"];
+  breakdown: ReturnType<typeof scoreMatch>["breakdown"];
+  matchedSkills: SkillItem[];
+  missingSkills: SkillItem[];
+  weakSkills: SkillItem[];
+  preferredSkills: RequirementSkillItem[];
+  niceToHaveSkills: RequirementSkillItem[];
+  requirementExtraction: {
+    source: "llm" | "deterministic_fallback";
+    provider: "qwen";
+    model: string;
+    cached: boolean;
+  };
+  recommendations: ReturnType<typeof buildRecommendations>;
+  evidenceSummary: EvidenceRef[];
+  scoringMeta: ReturnType<typeof scoreMatch>["scoringMeta"];
+};
+
+type MatchAnalysisResult = MatchAnalysisCreateData & {
+  analysisId: string;
+  createdAt: Date;
+};
+
+/**
+ * The small boundary around persistence and retrieval keeps the analysis rules
+ * deterministic and usable by any caller that supplies equivalent adapters.
+ */
+export type MatchAnalysisDependencies = {
+  findFileById: (fileId: string) => Promise<AnalysisFile | null>;
+  countVectorIndexRecords: (fileId: string) => Promise<number>;
+  loadAllChunkText: (fileId: string) => Promise<string>;
+  resolveJdRequirements: (input: {
+    jdFileId: string;
+    fullText: string;
+  }) => Promise<JdRequirementExtractionResult>;
+  retrieveSimilarChunks: typeof retrieveSimilarChunks;
+  createAnalysis: (analysis: MatchAnalysisCreateData) => Promise<MatchAnalysisResult>;
+};
+
+const JD_REQUIREMENT_EXTRACTION_VERSION = 1;
+
+const defaultJdRequirementExtractionService = createJdRequirementExtractionService({
+  findCached: async (jdFileId, contentHash, extractionVersion) => {
+    const record = await JdRequirementExtractionModel.findOne({
+      jdFileId: new Types.ObjectId(jdFileId),
+      contentHash,
+      extractionVersion,
+    }).lean();
+    if (!record) return null;
+    return {
+      requiredSkills: record.requiredSkills,
+      preferredSkills: record.preferredSkills,
+      niceToHaveSkills: record.niceToHaveSkills,
+      responsibilitySkills: record.responsibilitySkills,
+      experienceRequirements: record.experienceRequirements,
+      provider: "qwen",
+      model: record.model,
+    } as unknown as CachedJdRequirementExtraction;
+  },
+  save: async (input) => {
+    await JdRequirementExtractionModel.updateOne(
+      {
+        jdFileId: new Types.ObjectId(input.jdFileId),
+        contentHash: input.contentHash,
+        extractionVersion: input.extractionVersion,
+      },
+      {
+        $set: {
+          ...input,
+          jdFileId: new Types.ObjectId(input.jdFileId),
+        },
+      },
+      { upsert: true },
+    );
+  },
+  extractWithLlm: createQwenJdRequirementExtractor({
+    apiKey: env.DASHSCOPE_API_KEY,
+    model: env.QWEN_CHAT_MODEL,
+    timeoutMs: env.JD_REQUIREMENT_EXTRACTION_TIMEOUT_MS,
+  }),
+  extractWithRules: extractDeterministicRequirementGroups,
+  model: env.QWEN_CHAT_MODEL,
+  extractionVersion: JD_REQUIREMENT_EXTRACTION_VERSION,
+});
+
+const defaultMatchAnalysisDependencies: MatchAnalysisDependencies = {
+  findFileById: async (fileId) => {
+    const file = await IngestedFileModel.findById(fileId).select(
+      "_id originalName documentType indexingStatus chunkCount indexedChunkCount",
+    );
+    if (!file) {
+      return null;
+    }
+    return {
+      id: file._id.toString(),
+      originalName: file.originalName,
+      documentType: file.documentType,
+      indexingStatus: file.indexingStatus,
+      chunkCount: file.chunkCount,
+      indexedChunkCount: file.indexedChunkCount,
+    };
+  },
+  countVectorIndexRecords: (fileId) =>
+    VectorIndexModel.countDocuments({ fileId: new Types.ObjectId(fileId) }),
+  loadAllChunkText: async (fileId) => {
+    const chunks = await TextChunkModel.find({ fileId: new Types.ObjectId(fileId) })
+      .sort({ chunkIndex: 1 })
+      .select("content")
+      .lean();
+    return chunks.map((chunk) => chunk.content).join("\n");
+  },
+  resolveJdRequirements: (input) => defaultJdRequirementExtractionService.extract(input),
+  retrieveSimilarChunks,
+  createAnalysis: async (input) => {
+    const analysis = await MatchAnalysisModel.create({
+      ...input,
+      resumeFileId: new Types.ObjectId(input.resumeFileId),
+      jdFileId: new Types.ObjectId(input.jdFileId),
+    });
+    return {
+      analysisId: analysis._id.toString(),
+      ...input,
+      createdAt: analysis.createdAt,
+    };
+  },
+};
+
 const buildFileScopedEvidence = async (
-  fileId: string,
+  file: AnalysisFile,
   queries: string[],
   topK: number,
+  dependencies: Pick<MatchAnalysisDependencies, "retrieveSimilarChunks">,
 ): Promise<RetrievedChunk[]> => {
-  const [file, chunks, retrievalResponses] = await Promise.all([
-    IngestedFileModel.findById(fileId).select("_id originalName"),
-    TextChunkModel.find({ fileId: new Types.ObjectId(fileId) }).sort({ chunkIndex: 1 }),
-    Promise.all(
-      queries.map((query) =>
-        retrieveSimilarChunks({
-          query,
-          fileId,
-          topK,
-        }),
-      ),
+  const retrievalResponses = await Promise.all(
+    queries.map((query) =>
+      dependencies.retrieveSimilarChunks({
+        query,
+        fileId: file.id,
+        topK,
+      }),
     ),
-  ]);
+  );
 
-  if (!file) {
-    throw new AppError("File not found while building analysis evidence.", 404);
-  }
-
-  const retrievalScoreMap = new Map<string, number>();
-  for (const response of retrievalResponses) {
-    for (const item of response.results) {
-      const previous = retrievalScoreMap.get(item.chunkId) ?? 0;
-      if (item.score > previous) {
-        retrievalScoreMap.set(item.chunkId, item.score);
-      }
-    }
-  }
-
-  // Use all chunks from the selected file for deterministic analysis completeness.
-  return chunks.map((chunk) => ({
-    fileId: file._id.toString(),
-    fileName: file.originalName,
-    chunkId: chunk._id.toString(),
-    chunkIndex: chunk.chunkIndex,
-    textPreview: chunk.content.slice(0, 500),
-    score: retrievalScoreMap.get(chunk._id.toString()) ?? 0.12,
-  }));
+  return dedupeChunks(
+    retrievalResponses
+      .flatMap((response) => response.results)
+      .filter((chunk) => chunk.fileId === file.id),
+  );
 };
 
 const buildSkillItems = (
@@ -85,14 +218,54 @@ const buildSkillItems = (
   }));
 };
 
-const ensureFileExists = async (fileId: string, label: string) => {
+const buildRequirementSkillItems = (
+  skills: ExtractedSkill[],
+  evidenceLookup: Map<string, { evidence: EvidenceRef[] }>,
+): RequirementSkillItem[] => {
+  return skills.map((skill) => ({
+    skill: skill.canonicalName,
+    evidence: evidenceLookup.get(skill.canonicalName)?.evidence ?? [],
+    priority: skill.priority === "nice_to_have" ? "nice_to_have" : "preferred",
+    requirementEvidence: skill.evidence,
+  }));
+};
+
+const ensureFileIsReadyForAnalysis = async (
+  fileId: string,
+  label: "resumeFileId" | "jdFileId",
+  expectedDocumentType: "resume" | "job_description",
+  dependencies: Pick<MatchAnalysisDependencies, "findFileById" | "countVectorIndexRecords">,
+): Promise<AnalysisFile> => {
   if (!Types.ObjectId.isValid(fileId)) {
     throw new AppError(`Invalid ${label} format.`, 400);
   }
-  const file = await IngestedFileModel.findById(fileId);
+  const file = await dependencies.findFileById(fileId);
   if (!file) {
     throw new AppError(`${label} not found.`, 404);
   }
+  if (file.documentType !== expectedDocumentType) {
+    throw new AppError(`${label} must reference a ${expectedDocumentType} file.`, 400);
+  }
+  if (
+    file.indexingStatus !== "indexed" ||
+    file.chunkCount <= 0 ||
+    file.indexedChunkCount !== file.chunkCount
+  ) {
+    throw new AppError(
+      `${label} is not fully indexed. Index all file chunks before running analysis.`,
+      400,
+    );
+  }
+
+  const vectorRecordCount = await dependencies.countVectorIndexRecords(fileId);
+  if (vectorRecordCount !== file.chunkCount) {
+    throw new AppError(
+      `${label} vector index is incomplete or inconsistent. Re-index the file before running analysis.`,
+      400,
+    );
+  }
+
+  return file;
 };
 
 const JD_QUERIES = [
@@ -106,19 +279,20 @@ const RESUME_QUERIES = [
   "experience years responsibilities ownership",
 ];
 
-export const runMatchAnalysis = async (input: z.input<typeof requestSchema>) => {
-  const parsed = requestSchema.parse(input);
-  const topK = parsed.topK ?? env.M5_ANALYSIS_DEFAULT_TOPK;
+export const createMatchAnalysisService = (dependencies: MatchAnalysisDependencies) => {
+  return async (input: z.input<typeof requestSchema>): Promise<MatchAnalysisResult> => {
+    const parsed = requestSchema.parse(input);
+    const topK = parsed.topK ?? env.M5_ANALYSIS_DEFAULT_TOPK;
 
-  await Promise.all([
-    ensureFileExists(parsed.resumeFileId, "resumeFileId"),
-    ensureFileExists(parsed.jdFileId, "jdFileId"),
-  ]);
+    const [resumeFile, jdFile] = await Promise.all([
+      ensureFileIsReadyForAnalysis(parsed.resumeFileId, "resumeFileId", "resume", dependencies),
+      ensureFileIsReadyForAnalysis(parsed.jdFileId, "jdFileId", "job_description", dependencies),
+    ]);
 
-  const [resumeChunks, jdChunks] = await Promise.all([
-    buildFileScopedEvidence(parsed.resumeFileId, RESUME_QUERIES, topK),
-    buildFileScopedEvidence(parsed.jdFileId, JD_QUERIES, topK),
-  ]);
+    const [resumeChunks, jdChunks] = await Promise.all([
+      buildFileScopedEvidence(resumeFile, RESUME_QUERIES, topK, dependencies),
+      buildFileScopedEvidence(jdFile, JD_QUERIES, topK, dependencies),
+    ]);
 
   if (resumeChunks.length === 0 || jdChunks.length === 0) {
     throw new AppError(
@@ -127,9 +301,19 @@ export const runMatchAnalysis = async (input: z.input<typeof requestSchema>) => 
     );
   }
 
+  const jdFullText = await dependencies.loadAllChunkText(jdFile.id);
+  if (!jdFullText.trim()) {
+    throw new AppError("JD has no extracted text available for requirement analysis.", 400);
+  }
+  const requirementExtraction = await dependencies.resolveJdRequirements({
+    jdFileId: jdFile.id,
+    fullText: jdFullText,
+  });
   const jdSkillEvidence = extractSkillEvidence(jdChunks);
   const resumeSkillEvidence = extractSkillEvidence(resumeChunks);
-  const requiredSkills = extractRequiredSkillsFromJd(jdChunks);
+  const requiredSkills = new Set(
+    requirementExtraction.requiredSkills.map((skill) => skill.canonicalName),
+  );
   const resumeSkills = new Set(resumeSkillEvidence.keys());
 
   const matchedSkills = new Set(
@@ -163,6 +347,14 @@ export const runMatchAnalysis = async (input: z.input<typeof requestSchema>) => 
   const matchedItems = buildSkillItems([...matchedSkills].sort(), resumeSkillEvidence);
   const missingItems = buildSkillItems(missingSkills.sort(), jdSkillEvidence);
   const weakItems = buildSkillItems(weakSkills.sort(), resumeSkillEvidence);
+  const preferredItems = buildRequirementSkillItems(
+    requirementExtraction.preferredSkills,
+    resumeSkillEvidence,
+  );
+  const niceToHaveItems = buildRequirementSkillItems(
+    requirementExtraction.niceToHaveSkills,
+    resumeSkillEvidence,
+  );
   const evidenceSummary = [...resumeChunks, ...jdChunks]
     .sort((a, b) => b.score - a.score)
     .slice(0, 20)
@@ -174,36 +366,31 @@ export const runMatchAnalysis = async (input: z.input<typeof requestSchema>) => 
       score: chunk.score,
     }));
 
-  const analysis = await MatchAnalysisModel.create({
-    resumeFileId: new Types.ObjectId(parsed.resumeFileId),
-    jdFileId: new Types.ObjectId(parsed.jdFileId),
-    overallMatchScore: scoreResult.overallMatchScore,
-    confidence: scoreResult.confidence,
-    breakdown: scoreResult.breakdown,
-    matchedSkills: matchedItems,
-    missingSkills: missingItems,
-    weakSkills: weakItems,
-    recommendations,
-    evidenceSummary,
-    scoringMeta: scoreResult.scoringMeta,
-  });
-
-  return {
-    analysisId: analysis._id.toString(),
-    resumeFileId: parsed.resumeFileId,
-    jdFileId: parsed.jdFileId,
-    overallMatchScore: analysis.overallMatchScore,
-    confidence: analysis.confidence,
-    breakdown: analysis.breakdown,
-    matchedSkills: analysis.matchedSkills,
-    missingSkills: analysis.missingSkills,
-    weakSkills: analysis.weakSkills,
-    recommendations: analysis.recommendations,
-    evidenceSummary: analysis.evidenceSummary,
-    scoringMeta: analysis.scoringMeta,
-    createdAt: analysis.createdAt,
+    return dependencies.createAnalysis({
+      resumeFileId: parsed.resumeFileId,
+      jdFileId: parsed.jdFileId,
+      overallMatchScore: scoreResult.overallMatchScore,
+      confidence: scoreResult.confidence,
+      breakdown: scoreResult.breakdown,
+      matchedSkills: matchedItems,
+      missingSkills: missingItems,
+      weakSkills: weakItems,
+      preferredSkills: preferredItems,
+      niceToHaveSkills: niceToHaveItems,
+      requirementExtraction: {
+        source: requirementExtraction.source,
+        provider: requirementExtraction.provider,
+        model: requirementExtraction.model,
+        cached: requirementExtraction.cached,
+      },
+      recommendations,
+      evidenceSummary,
+      scoringMeta: scoreResult.scoringMeta,
+    });
   };
 };
+
+export const runMatchAnalysis = createMatchAnalysisService(defaultMatchAnalysisDependencies);
 
 export const getRecentAnalyses = async (input: {
   resumeFileId?: string;

@@ -1,92 +1,73 @@
 # RAG Career Assistant
 
-- Upload and ingest resume/JD files
-- Index chunks to vector DB
-- Chat with grounded citations
+An evidence-first workspace for ingesting resumes and job descriptions, retrieving grounded answers, and evaluating candidate alignment.
+
+- Upload and index resume/JD files
+- Ask grounded questions with source citations
 - Run deterministic match analysis and skill-gap scoring
-- View ops dashboard metrics
+- Monitor document, indexing, and analysis health in one dashboard
 
-## Demo (Text + Screenshots)
+## Demo
 
+The product is organized as a four-workspace flow. Each screen below is captured from the running local application.
 
-### 1) Upload Documents
+### 1) Documents
 
-User uploads resume/JD files (`PDF/TXT/DOCX`), chooses document type, and selects indexing mode:
+Ingest source material and control its indexing lifecycle.
 
-- `Auto`: indexes immediately after upload
-- `Manual`: upload first, then click manual index
+- Upload `PDF`, `TXT`, or `DOCX` files
+- Classify each upload as a resume, job description, or other supporting material
+- Choose automatic indexing or a manual review flow
+- Inspect collection/index health and use the retrieval debugger when needed
 
-The app validates file type/size and stores chunks in MongoDB for downstream retrieval and analysis.
+![Documents workspace](docs/images/demo-documents.png)
 
-![Upload Documents](docs/images/demo-upload.png)
+### 2) Ask
 
-### 2) Ask Questions (RAG Chat + Citations)
+Create a chat session and ask questions against all indexed material or a selected group of files.
 
-User creates a chat session, asks career-fit questions, and optionally filters retrieval by selecting one or multiple indexed files.
+- File-scoped retrieval filters
+- Grounded responses with source filename, chunk, and similarity-score citations
+- Clear failed-response state with a safe retry path
 
-The assistant returns grounded answers with traceable citations:
+![Ask workspace with evidence citations](docs/images/demo-ask.png)
 
-- source file name
-- chunk index
-- chunk id
-- similarity score
+### 3) Match
 
-If evidence is weak, the app responds with an explicit insufficient-evidence message.
+Choose one fully indexed resume and one fully indexed job description to run a deterministic comparison.
 
-![RAG Chat with Citations](docs/images/demo-chat.png)
+- Readiness checks prevent analysis on incomplete uploads
+- Overall score and category breakdown
+- Matched, missing, and weak skills with source evidence
+- Evidence-backed recommendations
 
-### 3) Get Match Score and Skill Gaps
+![Match workspace](docs/images/demo-match.png)
 
-User selects one resume file and one JD file, then runs deterministic analysis.
+### 4) Dashboard
 
-The app outputs:
+Review the local workspace's operational and analysis signals.
 
-- overall match score (0-100)
-- category breakdown (skill, experience, depth, domain)
-- matched/missing/weak skills
-- evidence-backed recommendations
+- Files, chat sessions/messages, analyses, and average match score
+- Index health and daily match trend
+- Top missing skills and recent files/chats/analyses
+- Intentional file-type filtering for file and analysis data; chat metrics remain workspace-wide
 
-This score is formula-based and reproducible (not arbitrary LLM scoring).
-
-![Match Analysis](docs/images/demo-match.png)
-
-### 4) Dashboard (Advanced Tools)
-
-In Advanced Tools, dashboard shows operational and analysis metrics:
-
-- total files/chats/analyses
-- indexing health
-- match trend by day
-- top missing skills
-- recent activity
-
-This helps reviewers see product behavior across the full workflow.
-
-![Operations Dashboard](docs/images/demo-dashboard.png)
+![Operations dashboard](docs/images/demo-dashboard.png)
 
 ## Tech Stack
 
 - Frontend: React + Vite + TypeScript
 - Backend: Node.js + Express + TypeScript
 - App data: MongoDB
-- Embeddings/LLM: Qwen (DashScope)
-- Vector DB: Qdrant (primary), Mongo vector fallback
+- Embeddings and chat: Qwen through DashScope
+- Vector database: Qdrant (primary) or MongoDB vector retrieval
 
 ## Product Flow
 
-Main tabs:
-
-- Upload
-- RAG Chat
-- Match Analysis
-
-Advanced tools (optional):
-
-- Vector indexing controls
-- Retrieval debugger
-- Dashboard
-
-Power BI integration endpoints exist in backend, but BI is hidden in the main UI.
+1. **Documents** — upload files, choose indexing behavior, and verify retrieval readiness.
+2. **Ask** — create a session, optionally narrow the source files, then inspect grounded citations.
+3. **Match** — select an indexed resume and JD, then review deterministic skill-gap results.
+4. **Dashboard** — monitor activity, indexing health, match trends, and missing skills.
 
 ## Local Setup
 
@@ -94,60 +75,60 @@ Power BI integration endpoints exist in backend, but BI is hidden in the main UI
 
 - Node.js 20+
 - npm
-- MongoDB local instance
-- Qdrant local instance (recommended)
+- Docker Desktop (recommended for MongoDB and Qdrant)
+- A DashScope API key for Qwen-powered embeddings and chat
 
-Run Qdrant with Docker:
+### 2) Start MongoDB and Qdrant
+
+The backend needs **both** MongoDB and Qdrant. Start them in separate persistent containers:
 
 ```bash
-docker run -p 6333:6333 qdrant/qdrant:latest
+docker run -d --name rag-career-mongodb -p 27017:27017 -v rag-career-mongodb-data:/data/db mongo:7
+docker run -d --name rag-career-qdrant -p 6333:6333 -v rag-career-qdrant-data:/qdrant/storage qdrant/qdrant:latest
+```
+
+Verify both containers:
+
+```bash
+docker ps
 ```
 
 Qdrant dashboard: `http://localhost:6333/dashboard`
 
-### 2) Environment
+On later Docker restarts, start the stopped containers again:
 
-Create `backend/.env`:
+```bash
+docker start rag-career-mongodb rag-career-qdrant
+```
+
+### 3) Configure the backend
+
+Copy the environment template into the backend directory:
+
+```powershell
+Copy-Item .env.example backend\.env
+```
+
+Set `DASHSCOPE_API_KEY` in `backend/.env`. The following is the default local configuration:
 
 ```env
 PORT=4000
 CLIENT_ORIGIN=http://localhost:5173
 MONGODB_URI=mongodb://127.0.0.1:27017/rag-career-assistant
-USE_IN_MEMORY_MONGO=false
-
-MAX_FILE_SIZE_MB=5
-DEFAULT_CHUNK_SIZE=800
-DEFAULT_CHUNK_OVERLAP=120
 
 EMBEDDING_PROVIDER=qwen
 DASHSCOPE_API_KEY=your_dashscope_api_key
 QWEN_EMBEDDING_MODEL=text-embedding-v3
-LOCAL_EMBEDDING_DIM=384
+QWEN_CHAT_MODEL=qwen-plus
 
 VECTOR_DB_MODE=qdrant
 QDRANT_URL=http://127.0.0.1:6333
-QDRANT_API_KEY=
 QDRANT_COLLECTION=career_chunks
-EMBEDDING_BATCH_SIZE=16
-
-QWEN_CHAT_MODEL=qwen-plus
-CHAT_MAX_CONTEXT_CHUNKS=6
-CHAT_MIN_RELEVANCE_SCORE=0.25
-CHAT_FALLBACK_TO_EXTRACTIVE=false
-
-M5_ANALYSIS_DEFAULT_TOPK=8
-
-# Optional backend BI endpoints (UI currently hides BI panel)
-POWERBI_MODE=public
-POWERBI_EMBED_URL=
-POWERBI_REPORT_ID=
-POWERBI_TENANT_ID=
-POWERBI_CLIENT_ID=
-POWERBI_CLIENT_SECRET=
-POWERBI_WORKSPACE_ID=
 ```
 
-### 3) Install and run
+Without a valid DashScope key, the backend can start but Qwen-backed indexing and chat requests cannot complete.
+
+### 4) Install and run
 
 ```bash
 npm install
@@ -155,73 +136,73 @@ npm install --prefix backend
 npm install --prefix frontend
 ```
 
-Run backend:
+Run both applications together:
+
+```bash
+npm run dev
+```
+
+Or run each process in its own terminal:
 
 ```bash
 npm run dev --prefix backend
-```
-
-Run frontend:
-
-```bash
 npm run dev --prefix frontend
 ```
 
-Frontend: `http://localhost:5173`
+Default local URLs:
+
+- Frontend: `http://localhost:5173`
+- Backend health: `http://localhost:4000/api/health`
+- Qdrant dashboard: `http://localhost:6333/dashboard`
+
+If port `5173` is already occupied, Vite chooses another available port. Use the URL printed in the frontend terminal.
 
 ## Current Features
 
-### Upload + Ingestion
+### Upload and Ingestion
 
 - PDF/TXT/DOCX upload
-- Text extraction + chunking
-- Metadata/chunks persisted in MongoDB
-- Indexing mode toggle:
-  - Manual
-  - Auto index after upload
-- Destructive action:
-  - Delete all uploaded files/chunks/vector mappings
-
-### Vector Indexing + Retrieval
-
+- Text extraction and chunking
+- File and chunk metadata stored in MongoDB
+- Automatic or manual indexing
 - Index one file or all pending files
-- Multi-provider embeddings (Qwen/local)
-- Qdrant or Mongo vector retrieval
-- Similarity scores + source metadata
-- Destructive action:
-  - Delete all vectors and reset indexing status
+- Clear uploaded-file and vector-index reset controls for local demos
 
-### RAG Chat + Citations
+### Vector Retrieval
+
+- Qwen or local embedding provider
+- Qdrant or MongoDB vector retrieval mode
+- Multi-file retrieval filters
+- Real similarity scores and source metadata
+- Retrieval debugger for inspecting the returned evidence
+
+### RAG Chat and Citations
 
 - Session-based chat
-- Grounded citations (filename/chunk index/chunk id/score)
+- Grounded citations with file, chunk, and score details
 - Insufficient-evidence guardrail response
-- Multi-file filter support (select multiple indexed files)
+- Persistent terminal failure message when retrieval or generation fails
+- Retry action and stale-request protection when switching sessions
 
 ### Match Analysis
 
-Deterministic scoring (0-100), weighted rubric:
+Deterministic scoring uses a weighted rubric:
 
-- Skill Coverage (50%)
-- Experience Alignment (20%)
-- Tool/Tech Depth (20%)
-- Domain Similarity (10%)
+- Skill coverage: 50%
+- Experience alignment: 20%
+- Tool/technology depth: 20%
+- Domain similarity: 10%
 
-Outputs:
+Analysis only runs when the selected resume and JD are fully indexed and their vector-chunk counts are complete. It returns the overall score, confidence, category breakdown, source-backed skills, and recommendations.
 
-- Overall score + confidence
-- Matched / missing / weak skills
-- Evidence-backed references
-- Recommendations
+JD requirements are extracted with Qwen when configured and fall back to a deterministic keyword extractor if the model is unavailable or does not return valid structured data. The validated result is cached by JD content and schema version.
 
 ### Dashboard
 
-- KPI summary
-- Match trend
-- Top missing skills
-- Recent activity
-
-
+- KPI summary and index health
+- Match trend with an accessible data-table alternative
+- Top missing skills and recent activity
+- File-type filters consistently applied to file/index/analysis metrics
 
 ## API Quick Reference
 
@@ -243,10 +224,7 @@ Outputs:
 - `GET /api/vector/index/status`
 - `POST /api/vector/retrieve`
 
-Retrieval request supports both:
-
-- `fileId` (single)
-- `fileIds` (multi)
+Retrieval accepts either `fileId` (one file) or `fileIds` (multiple files).
 
 ### Chat
 
@@ -255,11 +233,11 @@ Retrieval request supports both:
 - `GET /api/chat/sessions/:sessionId/messages`
 - `POST /api/chat/sessions/:sessionId/messages`
 
-Send message payload:
+Example message payload:
 
 ```json
 {
-  "question": "How does this candidate match backend intern role?",
+  "question": "How does this candidate match a backend intern role?",
   "topK": 6,
   "fileIds": ["resume_file_id", "jd_file_id"]
 }
@@ -273,47 +251,42 @@ Send message payload:
 ### Dashboard
 
 - `GET /api/dashboard/summary?days=30&fileType=resume`
-- `GET /api/dashboard/match-trend?days=30`
-- `GET /api/dashboard/skill-gaps?limit=10`
-
-### BI Export (optional backend endpoints)
-
-- `GET /api/bi/dataset`
-- `GET /api/bi/export/json`
-- `GET /api/bi/export/csv`
-- `GET /api/bi/powerbi/embed-config`
+- `GET /api/dashboard/match-trend?days=30&fileType=resume`
+- `GET /api/dashboard/skill-gaps?limit=10&fileType=resume`
 
 ## Build and Tests
 
-Build all:
+Build all packages:
 
 ```bash
 npm run build
 ```
 
-Backend tests:
+Run backend tests:
 
 ```bash
 npm run test --prefix backend
 ```
 
-Note: in some sandboxed environments, `tsx --test` may fail due IPC permission (`EPERM`), while build still passes.
+Run the complete local static check:
 
-## Ship Checklist
+```bash
+npm run typecheck
+```
 
-- [ ] Backend and frontend both run locally
-- [ ] Upload + auto/manual indexing both work
+## Demo Checklist
+
+- [ ] MongoDB and Qdrant containers are running
+- [ ] `DASHSCOPE_API_KEY` is set in `backend/.env`
+- [ ] Backend health endpoint returns `status: ok`
+- [ ] Upload and manual/automatic indexing work
 - [ ] Chat returns grounded citations
-- [ ] Multi-file chat filter works
-- [ ] Match analysis returns deterministic score + skills
-- [ ] Dashboard reflects recent activity
-- [ ] README and `.env` are up to date
-- [ ] No lint/type errors on changed files
+- [ ] Match analysis accepts only complete resume/JD indexes
+- [ ] Dashboard reflects the current workspace activity
 
 ## Known Limitations
 
-- No auth/authorization yet (demo-focused app)
-- Delete-all endpoints are intentionally powerful for local demos
-- Skill extraction is deterministic keyword-based, not ontology-complete
-- Charts are lightweight (no advanced interactive analytics)
-
+- No authentication or authorization yet; this is a local demo workspace.
+- Delete/reset endpoints are intentionally powerful for local demos.
+- Local embedding mode is useful for development but Qwen is the intended quality path.
+- Charts are deliberately lightweight and always have a text/table interpretation where needed.

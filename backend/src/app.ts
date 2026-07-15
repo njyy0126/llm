@@ -5,7 +5,6 @@ import vectorRoutes from "./routes/vectorRoutes";
 import chatRoutes from "./routes/chatRoutes";
 import analysisRoutes from "./routes/analysisRoutes";
 import dashboardRoutes from "./routes/dashboardRoutes";
-import biRoutes from "./routes/biRoutes";
 import { errorHandler, notFoundHandler } from "./middlewares/errorHandler";
 import { env } from "./config/env";
 
@@ -32,7 +31,6 @@ app.use("/api/vector", vectorRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/analysis", analysisRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/bi", biRoutes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
