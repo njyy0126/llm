@@ -4,18 +4,65 @@ import { ChatSessionModel } from "../../models/ChatSession";
 import { ChatMessageModel } from "../../models/ChatMessage";
 import { MatchAnalysisModel } from "../../models/MatchAnalysis";
 
+const fileTypeSchema = z.enum(["resume", "job_description", "other"]);
+
+export type DashboardFileType = z.infer<typeof fileTypeSchema>;
+
 const summaryQuerySchema = z.object({
   days: z.coerce.number().int().positive().max(365).default(30),
-  fileType: z.enum(["resume", "job_description", "other"]).optional(),
+  fileType: fileTypeSchema.optional(),
 });
 
 const trendQuerySchema = z.object({
   days: z.coerce.number().int().positive().max(365).default(30),
+  fileType: fileTypeSchema.optional(),
 });
 
 const skillGapQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(50).default(10),
+  fileType: fileTypeSchema.optional(),
 });
+
+export const buildDashboardFilters = (
+  fileType: DashboardFileType | undefined,
+  fileIds: unknown[] = [],
+) => {
+  const fileFilter = fileType ? { documentType: fileType } : {};
+
+  if (fileType === "resume") {
+    return {
+      fileFilter,
+      analysisFilter: { resumeFileId: { $in: fileIds } },
+    };
+  }
+
+  if (fileType === "job_description") {
+    return {
+      fileFilter,
+      analysisFilter: { jdFileId: { $in: fileIds } },
+    };
+  }
+
+  if (fileType === "other") {
+    return {
+      fileFilter,
+      analysisFilter: { _id: { $in: [] } },
+    };
+  }
+
+  return { fileFilter, analysisFilter: {} };
+};
+
+const resolveDashboardFilters = async (fileType: DashboardFileType | undefined) => {
+  const filters = buildDashboardFilters(fileType);
+  if (!fileType || fileType === "other") return filters;
+
+  const selectedFiles = await IngestedFileModel.find(filters.fileFilter).select("_id");
+  return buildDashboardFilters(
+    fileType,
+    selectedFiles.map((file) => file._id),
+  );
+};
 
 export const aggregateSkillGapsFromAnalyses = (
   analyses: Array<{
@@ -41,16 +88,22 @@ const formatDay = (value: Date): string => value.toISOString().slice(0, 10);
 export const getDashboardSummary = async (input: { days?: string; fileType?: string }) => {
   const parsed = summaryQuerySchema.parse(input);
   const since = new Date(Date.now() - parsed.days * 24 * 60 * 60 * 1000);
-
-  const fileFilter = parsed.fileType ? { documentType: parsed.fileType } : {};
+  const { fileFilter, analysisFilter } = await resolveDashboardFilters(parsed.fileType);
   const [totalFiles, fileTypeRows, indexingRows, totalChatSessions, totalChatMessages, analysisStats] =
     await Promise.all([
-      IngestedFileModel.countDocuments(),
-      IngestedFileModel.aggregate([{ $group: { _id: "$documentType", count: { $sum: 1 } } }]),
-      IngestedFileModel.aggregate([{ $group: { _id: "$indexingStatus", count: { $sum: 1 } } }]),
+      IngestedFileModel.countDocuments(fileFilter),
+      IngestedFileModel.aggregate([
+        { $match: fileFilter },
+        { $group: { _id: "$documentType", count: { $sum: 1 } } },
+      ]),
+      IngestedFileModel.aggregate([
+        { $match: fileFilter },
+        { $group: { _id: "$indexingStatus", count: { $sum: 1 } } },
+      ]),
       ChatSessionModel.countDocuments(),
       ChatMessageModel.countDocuments(),
       MatchAnalysisModel.aggregate([
+        { $match: analysisFilter },
         {
           $group: {
             _id: null,
@@ -86,7 +139,9 @@ export const getDashboardSummary = async (input: { days?: string; fileType?: str
   const [recentFiles, recentChats, recentAnalyses] = await Promise.all([
     IngestedFileModel.find(fileFilter).sort({ createdAt: -1 }).limit(8),
     ChatSessionModel.find({ updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(8),
-    MatchAnalysisModel.find({ createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(8),
+    MatchAnalysisModel.find({ createdAt: { $gte: since }, ...analysisFilter })
+      .sort({ createdAt: -1 })
+      .limit(8),
   ]);
 
   return {
@@ -124,11 +179,12 @@ export const getDashboardSummary = async (input: { days?: string; fileType?: str
   };
 };
 
-export const getMatchTrend = async (input: { days?: string }) => {
+export const getMatchTrend = async (input: { days?: string; fileType?: string }) => {
   const parsed = trendQuerySchema.parse(input);
   const since = new Date(Date.now() - parsed.days * 24 * 60 * 60 * 1000);
+  const { analysisFilter } = await resolveDashboardFilters(parsed.fileType);
 
-  const analyses = await MatchAnalysisModel.find({ createdAt: { $gte: since } }).select(
+  const analyses = await MatchAnalysisModel.find({ createdAt: { $gte: since }, ...analysisFilter }).select(
     "overallMatchScore createdAt",
   );
 
@@ -155,9 +211,13 @@ export const getMatchTrend = async (input: { days?: string }) => {
   };
 };
 
-export const getTopSkillGaps = async (input: { limit?: string }) => {
+export const getTopSkillGaps = async (input: { limit?: string; fileType?: string }) => {
   const parsed = skillGapQuerySchema.parse(input);
-  const analyses = await MatchAnalysisModel.find().sort({ createdAt: -1 }).limit(500).select("missingSkills");
+  const { analysisFilter } = await resolveDashboardFilters(parsed.fileType);
+  const analyses = await MatchAnalysisModel.find(analysisFilter)
+    .sort({ createdAt: -1 })
+    .limit(500)
+    .select("missingSkills");
   const ranked = aggregateSkillGapsFromAnalyses(
     analyses.map((item) => ({
       missingSkills: item.missingSkills.map((skill) => ({ skill: skill.skill })),

@@ -30,6 +30,8 @@ const chatMessageSchema = new Schema(
     content: { type: String, required: true },
     citations: { type: [citationSchema], default: [] },
     retrievedChunks: { type: [retrievedChunkSchema], default: [] },
+    status: { type: String, enum: ["completed", "failed"], default: "completed" },
+    failureCode: { type: String, enum: ["retrieval", "generation"], required: false },
   },
   { timestamps: true },
 );

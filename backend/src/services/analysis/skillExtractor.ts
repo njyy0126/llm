@@ -277,6 +277,25 @@ const JD_REQUIRED_CUES = [
   "proficient",
 ];
 const JD_SECTION_HEADERS = ["requirements", "qualifications", "must have", "skills required"];
+const PREFERRED_CUES = ["preferred", "preferably", "familiar with", "familiarity with", "nice to have"];
+const NICE_TO_HAVE_CUES = ["is a plus", "a plus", "bonus", "advantage"];
+const RESPONSIBILITY_SECTION_HEADERS = ["responsibilities", "what you will do", "what you'll do"];
+
+export type DeterministicRequirementSkill = {
+  name: string;
+  canonicalName: string;
+  priority: "must_have" | "preferred" | "nice_to_have" | "responsibility";
+  evidence: string;
+  confidence: number;
+};
+
+export type DeterministicRequirementGroups = {
+  requiredSkills: DeterministicRequirementSkill[];
+  preferredSkills: DeterministicRequirementSkill[];
+  niceToHaveSkills: DeterministicRequirementSkill[];
+  responsibilitySkills: DeterministicRequirementSkill[];
+  experienceRequirements: [];
+};
 
 const normalizeToken = (token: string): string => {
   const cleaned = token.toLowerCase().replace(/[^a-z0-9.+#]/g, "");
@@ -372,4 +391,66 @@ export const extractRequiredSkillsFromJd = (chunks: RetrievedChunk[]): Set<strin
   }
 
   return required.size > 0 ? required : fallback;
+};
+
+export const extractDeterministicRequirementGroups = (
+  text: string,
+): DeterministicRequirementGroups => {
+  const grouped = {
+    requiredSkills: [] as DeterministicRequirementSkill[],
+    preferredSkills: [] as DeterministicRequirementSkill[],
+    niceToHaveSkills: [] as DeterministicRequirementSkill[],
+    responsibilitySkills: [] as DeterministicRequirementSkill[],
+    experienceRequirements: [] as [],
+  };
+  const seen = new Set<string>();
+  let inRequirementsSection = false;
+  let inResponsibilitiesSection = false;
+
+  for (const line of text.split("\n").map((item) => item.trim()).filter(Boolean)) {
+    const normalizedLine = line.toLowerCase();
+    const isSectionHeader = JD_SECTION_HEADERS.some(
+      (header) => normalizedLine === header || normalizedLine === `${header}:`,
+    );
+    if (isSectionHeader) {
+      inRequirementsSection = true;
+      inResponsibilitiesSection = false;
+      continue;
+    }
+    if (RESPONSIBILITY_SECTION_HEADERS.some((header) => normalizedLine.includes(header))) {
+      inRequirementsSection = false;
+      inResponsibilitiesSection = true;
+      continue;
+    }
+
+    const priority = NICE_TO_HAVE_CUES.some((cue) => normalizedLine.includes(cue))
+      ? "nice_to_have"
+      : PREFERRED_CUES.some((cue) => normalizedLine.includes(cue))
+        ? "preferred"
+        : inResponsibilitiesSection
+          ? "responsibility"
+          : inRequirementsSection || JD_REQUIRED_CUES.some((cue) => normalizedLine.includes(cue))
+            ? "must_have"
+            : null;
+    if (!priority) continue;
+
+    for (const skill of extractSkillsFromText(line)) {
+      const key = `${priority}:${skill}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const item: DeterministicRequirementSkill = {
+        name: skill,
+        canonicalName: skill,
+        priority,
+        evidence: line,
+        confidence: 1,
+      };
+      if (priority === "must_have") grouped.requiredSkills.push(item);
+      if (priority === "preferred") grouped.preferredSkills.push(item);
+      if (priority === "nice_to_have") grouped.niceToHaveSkills.push(item);
+      if (priority === "responsibility") grouped.responsibilitySkills.push(item);
+    }
+  }
+
+  return grouped;
 };

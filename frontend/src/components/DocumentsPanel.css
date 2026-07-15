@@ -1,0 +1,45 @@
+.file-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .65rem;
+}
+
+.visually-hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.upload-form .file-picker-button {
+  display: inline-flex;
+  min-height: 2.7rem;
+  align-items: center;
+  justify-content: center;
+  padding: .58rem .85rem;
+  border: 1px solid var(--primary);
+  border-radius: .55rem;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+  font-size: .84rem;
+  font-weight: 800;
+  transition: background-color .16s ease, transform .16s ease;
+}
+
+.upload-form .file-picker-button:hover {
+  background: var(--primary-dark);
+}
+
+.visually-hidden-file-input:focus-visible + .file-picker-button {
+  outline: 3px solid rgba(20, 122, 93, .35);
+  outline-offset: 3px;
+}
+
+.file-picker .file-selection {
+  margin: 0;
+}

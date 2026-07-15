@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractRequiredSkillsFromJd, extractSkillEvidence } from "./skillExtractor";
+import {
+  extractDeterministicRequirementGroups,
+  extractRequiredSkillsFromJd,
+  extractSkillEvidence,
+} from "./skillExtractor";
 import type { RetrievedChunk } from "../retrievalService";
 
 const jdLikeChunks: RetrievedChunk[] = [
@@ -83,4 +87,16 @@ test("extractRequiredSkillsFromJd captures common full-stack technologies", () =
   assert.equal(required.has("ci_cd"), true);
   assert.equal(required.has("github_actions"), true);
   assert.equal(required.has("jest"), true);
+});
+
+test("deterministic fallback keeps preferred and bonus skills out of mandatory requirements", () => {
+  const requirements = extractDeterministicRequirementGroups(
+    "Requirements:\n- Must have TypeScript experience.\n- React experience is preferred.\n- Docker knowledge is a plus.",
+  );
+
+  assert.equal(requirements.requiredSkills.some((skill) => skill.canonicalName === "typescript"), true);
+  assert.equal(requirements.preferredSkills.some((skill) => skill.canonicalName === "react"), true);
+  assert.equal(requirements.niceToHaveSkills.some((skill) => skill.canonicalName === "docker"), true);
+  assert.equal(requirements.requiredSkills.some((skill) => skill.canonicalName === "react"), false);
+  assert.equal(requirements.requiredSkills.some((skill) => skill.canonicalName === "docker"), false);
 });

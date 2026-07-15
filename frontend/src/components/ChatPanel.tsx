@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type ChatSession = {
   sessionId: string;
@@ -50,6 +50,7 @@ export default function ChatPanel() {
   const [topK, setTopK] = useState(6);
   const [loading, setLoading] = useState(false);
   const [messageError, setMessageError] = useState("");
+  const [operationStatus, setOperationStatus] = useState<"idle" | "loading" | "failed">("loading");
   const [expandedCitationMessageIds, setExpandedCitationMessageIds] = useState<Set<string>>(
     new Set(),
   );
@@ -61,7 +62,7 @@ export default function ChatPanel() {
     [sessions, selectedSessionId],
   );
 
-  const fetchSessions = async () => {
+  const fetchSessions = useCallback(async () => {
     const response = await fetch("/api/chat/sessions");
     const payload = (await response.json()) as {
       message?: string;
@@ -76,13 +77,15 @@ export default function ChatPanel() {
       setMessages([]);
       return;
     }
-    if (!selectedSessionId || !payload.data.some((session) => session.sessionId === selectedSessionId)) {
-      setSelectedSessionId(payload.data[0].sessionId);
-    }
-  };
+    setSelectedSessionId((currentSessionId) =>
+      currentSessionId && payload.data!.some((session) => session.sessionId === currentSessionId)
+        ? currentSessionId
+        : payload.data![0].sessionId,
+    );
+  }, []);
 
-  const fetchMessages = async (sessionId: string) => {
-    const response = await fetch(`/api/chat/sessions/${sessionId}/messages`);
+  const fetchMessages = useCallback(async (sessionId: string, signal: AbortSignal) => {
+    const response = await fetch(`/api/chat/sessions/${sessionId}/messages`, { signal });
     const payload = (await response.json()) as {
       message?: string;
       data?: { messages?: ChatMessage[] };
@@ -90,10 +93,10 @@ export default function ChatPanel() {
     if (!response.ok || !payload.data) {
       throw new Error(payload.message || "Failed to load messages.");
     }
-    setMessages(payload.data.messages ?? []);
-  };
+    return payload.data.messages ?? [];
+  }, []);
 
-  const fetchIndexedFiles = async () => {
+  const fetchIndexedFiles = useCallback(async () => {
     const response = await fetch("/api/ingest/files?indexedOnly=true");
     const payload = (await response.json()) as {
       message?: string;
@@ -103,12 +106,31 @@ export default function ChatPanel() {
       throw new Error(payload.message || "Failed to load indexed files.");
     }
     setIndexedFiles(payload.data);
-  };
+    setSelectedFileIds((currentFileIds) =>
+      currentFileIds.filter((selectedId) => payload.data!.some((file) => file.fileId === selectedId)),
+    );
+  }, []);
+
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      setLoading(true);
+      setOperationStatus("loading");
+      setMessageError("");
+      await Promise.all([fetchSessions(), fetchIndexedFiles()]);
+      setOperationStatus("idle");
+    } catch (error) {
+      setMessageError(toFriendlyError(error, "Failed to initialize chat."));
+      setOperationStatus("failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchIndexedFiles, fetchSessions]);
 
   const createSession = async () => {
     setMessageError("");
     try {
       setLoading(true);
+      setOperationStatus("loading");
       const response = await fetch("/api/chat/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,8 +147,10 @@ export default function ChatPanel() {
       await fetchSessions();
       setSelectedSessionId(payload.data.sessionId);
       setMessages([]);
+      setOperationStatus("idle");
     } catch (error) {
       setMessageError(toFriendlyError(error, "Could not create session."));
+      setOperationStatus("failed");
     } finally {
       setLoading(false);
     }
@@ -141,6 +165,7 @@ export default function ChatPanel() {
     setMessageError("");
     try {
       setLoading(true);
+      setOperationStatus("loading");
       const response = await fetch(`/api/chat/sessions/${sessionId}`, {
         method: "DELETE",
       });
@@ -153,8 +178,10 @@ export default function ChatPanel() {
         setMessages([]);
       }
       await fetchSessions();
+      setOperationStatus("idle");
     } catch (error) {
       setMessageError(toFriendlyError(error, "Could not delete chat session."));
+      setOperationStatus("failed");
     } finally {
       setLoading(false);
     }
@@ -185,6 +212,7 @@ export default function ChatPanel() {
 
     try {
       setLoading(true);
+      setOperationStatus("loading");
       setMessageError("");
       const response = await fetch(`/api/chat/sessions/${selectedSessionId}/messages`, {
         method: "POST",
@@ -210,8 +238,10 @@ export default function ChatPanel() {
       setMessages((prev) => [...prev, payload.data!.userMessage!, payload.data!.assistantMessage!]);
       setQuestion("");
       await fetchSessions();
+      setOperationStatus("idle");
     } catch (error) {
       setMessageError(toFriendlyError(error, "Could not send message."));
+      setOperationStatus("failed");
     } finally {
       setLoading(false);
     }
@@ -230,50 +260,58 @@ export default function ChatPanel() {
   };
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        setLoading(true);
-        await Promise.all([fetchSessions(), fetchIndexedFiles()]);
-      } catch (error) {
-        setMessageError(toFriendlyError(error, "Failed to initialize chat."));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void load();
-  }, []);
+    const refreshTimer = window.setTimeout(() => {
+      void refreshWorkspace();
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
+  }, [refreshWorkspace]);
 
   useEffect(() => {
     if (!selectedSessionId) {
-      setMessages([]);
       return;
     }
+
+    const controller = new AbortController();
+    let isCurrentSessionRequest = true;
 
     const loadMessages = async () => {
       try {
         setLoading(true);
+        setOperationStatus("loading");
         setMessageError("");
-        await fetchMessages(selectedSessionId);
+        const loadedMessages = await fetchMessages(selectedSessionId, controller.signal);
+        if (!isCurrentSessionRequest) {
+          return;
+        }
+        setMessages(loadedMessages);
+        setOperationStatus("idle");
       } catch (error) {
+        if (!isCurrentSessionRequest || (error instanceof DOMException && error.name === "AbortError")) {
+          return;
+        }
         setMessageError(toFriendlyError(error, "Failed to load selected session."));
+        setOperationStatus("failed");
       } finally {
-        setLoading(false);
+        if (isCurrentSessionRequest) {
+          setLoading(false);
+        }
       }
     };
 
     void loadMessages();
-  }, [selectedSessionId]);
-
-  useEffect(() => {
-    setSelectedFileIds((prev) =>
-      prev.filter((selectedId) => indexedFiles.some((file) => file.fileId === selectedId)),
-    );
-  }, [indexedFiles]);
+    return () => {
+      isCurrentSessionRequest = false;
+      controller.abort();
+    };
+  }, [fetchMessages, selectedSessionId]);
 
   return (
     <section className="card">
       <h2>Ask Questions (RAG Chat)</h2>
+      <div className={`operation-status ${operationStatus}`} role="status" aria-live="polite">
+        {operationStatus === "loading" && "Updating chat workspace…"}
+        {operationStatus === "failed" && "The last chat operation did not complete."}
+      </div>
       <div className="chat-layout">
         <aside className="chat-sessions">
           <div className="chat-sessions-header">
@@ -292,7 +330,10 @@ export default function ChatPanel() {
                     <button
                       type="button"
                       className={selectedSessionId === session.sessionId ? "active" : ""}
-                      onClick={() => setSelectedSessionId(session.sessionId)}
+                      onClick={() => {
+                        setSelectedSessionId(session.sessionId);
+                        setMessages([]);
+                      }}
                     >
                       {session.title}
                     </button>
@@ -375,7 +416,14 @@ export default function ChatPanel() {
             </button>
           </form>
 
-          {messageError && <p className="error-text">{messageError}</p>}
+          {messageError && (
+            <div className="notice error-text" role="alert">
+              <p>{messageError}</p>
+              <button type="button" className="secondary-button" onClick={() => void refreshWorkspace()} disabled={loading}>
+                Retry loading workspace
+              </button>
+            </div>
+          )}
 
           <div className="chat-messages">
             {messages.length === 0 ? (

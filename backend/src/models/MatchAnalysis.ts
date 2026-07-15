@@ -19,6 +19,26 @@ const skillItemSchema = new Schema(
   { _id: false },
 );
 
+const requirementSkillItemSchema = new Schema(
+  {
+    skill: { type: String, required: true },
+    evidence: { type: [evidenceRefSchema], default: [] },
+    priority: { type: String, enum: ["preferred", "nice_to_have"], required: true },
+    requirementEvidence: { type: String, required: true },
+  },
+  { _id: false },
+);
+
+const requirementExtractionSchema = new Schema(
+  {
+    source: { type: String, enum: ["llm", "deterministic_fallback"], required: true },
+    provider: { type: String, enum: ["qwen"], required: true },
+    model: { type: String, required: true },
+    cached: { type: Boolean, required: true },
+  },
+  { _id: false },
+);
+
 const breakdownSchema = new Schema(
   {
     skillCoverage: { type: Number, required: true },
@@ -59,6 +79,9 @@ const matchAnalysisSchema = new Schema(
     matchedSkills: { type: [skillItemSchema], default: [] },
     missingSkills: { type: [skillItemSchema], default: [] },
     weakSkills: { type: [skillItemSchema], default: [] },
+    preferredSkills: { type: [requirementSkillItemSchema], default: [] },
+    niceToHaveSkills: { type: [requirementSkillItemSchema], default: [] },
+    requirementExtraction: { type: requirementExtractionSchema, required: true },
     recommendations: { type: [recommendationSchema], default: [] },
     evidenceSummary: { type: [evidenceRefSchema], default: [] },
     scoringMeta: { type: scoringMetaSchema, required: true },

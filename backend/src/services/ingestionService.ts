@@ -9,8 +9,22 @@ import { AppError } from "../utils/AppError";
 import {
   getQdrantClient,
   getQdrantCollectionName,
+  isQdrantCollectionNotFound,
   resetQdrantCollectionCache,
 } from "./vector/qdrantClient";
+
+type QdrantDeletionClient = {
+  deleteCollection: (collectionName: string) => Promise<unknown>;
+};
+
+type DeleteAllUploadedFilesDependencies = {
+  vectorDbMode?: "qdrant" | "mongo";
+  qdrant?: QdrantDeletionClient;
+  collectionName?: string;
+  getCounts?: () => Promise<[number, number, number]>;
+  clearRecords?: () => Promise<unknown>;
+  resetQdrantCollectionCache?: () => void;
+};
 
 const ingestInputSchema = z.object({
   documentType: z.enum(["resume", "job_description", "other"]).default("other"),
@@ -21,8 +35,40 @@ const ingestInputSchema = z.object({
 export type IngestRequestInput = z.input<typeof ingestInputSchema>;
 const listFilesSchema = z.object({
   documentType: z.enum(["resume", "job_description", "other"]).optional(),
-  indexedOnly: z.coerce.boolean().optional(),
+  indexedOnly: z.preprocess(
+    (value) => {
+      if (value === true || value === "true") {
+        return true;
+      }
+      if (value === false || value === "false") {
+        return false;
+      }
+      return value;
+    },
+    z.boolean().optional(),
+  ),
 });
+
+export const parseListIngestedFilesInput = (input: {
+  documentType?: string;
+  indexedOnly?: unknown;
+}) => listFilesSchema.parse(input);
+
+export const buildIngestedFilesFilter = (parsed: z.output<typeof listFilesSchema>) => {
+  const filter: {
+    documentType?: "resume" | "job_description" | "other";
+    indexingStatus?: "indexed";
+  } = {};
+
+  if (parsed.documentType) {
+    filter.documentType = parsed.documentType;
+  }
+  if (parsed.indexedOnly === true) {
+    filter.indexingStatus = "indexed";
+  }
+
+  return filter;
+};
 
 type IngestionResult = {
   fileId: string;
@@ -102,19 +148,9 @@ export const ingestDocument = async (
   };
 };
 
-export const listIngestedFiles = async (input: { documentType?: string; indexedOnly?: string }) => {
-  const parsed = listFilesSchema.parse(input);
-  const filter: {
-    documentType?: "resume" | "job_description" | "other";
-    indexingStatus?: "indexed";
-  } = {};
-
-  if (parsed.documentType) {
-    filter.documentType = parsed.documentType;
-  }
-  if (parsed.indexedOnly) {
-    filter.indexingStatus = "indexed";
-  }
+export const listIngestedFiles = async (input: { documentType?: string; indexedOnly?: unknown }) => {
+  const parsed = parseListIngestedFilesInput(input);
+  const filter = buildIngestedFilesFilter(parsed);
 
   const files = await IngestedFileModel.find(filter).sort({ createdAt: -1 }).limit(100);
   return files.map((file) => ({
@@ -129,32 +165,42 @@ export const listIngestedFiles = async (input: { documentType?: string; indexedO
   }));
 };
 
-export const deleteAllUploadedFiles = async () => {
-  const [fileCount, chunkCount, vectorCount] = await Promise.all([
-    IngestedFileModel.countDocuments(),
-    TextChunkModel.countDocuments(),
-    VectorIndexModel.countDocuments(),
-  ]);
+export const deleteAllUploadedFiles = async (
+  dependencies: DeleteAllUploadedFilesDependencies = {},
+) => {
+  const vectorDbMode = dependencies.vectorDbMode ?? env.VECTOR_DB_MODE;
+  const getCounts =
+    dependencies.getCounts ??
+    (() =>
+      Promise.all([
+        IngestedFileModel.countDocuments(),
+        TextChunkModel.countDocuments(),
+        VectorIndexModel.countDocuments(),
+      ]) as Promise<[number, number, number]>);
+  const clearRecords =
+    dependencies.clearRecords ??
+    (() =>
+      Promise.all([
+        VectorIndexModel.deleteMany({}),
+        TextChunkModel.deleteMany({}),
+        IngestedFileModel.deleteMany({}),
+      ]));
+  const [fileCount, chunkCount, vectorCount] = await getCounts();
 
-  if (env.VECTOR_DB_MODE === "qdrant") {
-    const qdrant = getQdrantClient();
-    const collectionName = getQdrantCollectionName();
+  if (vectorDbMode === "qdrant") {
+    const qdrant = dependencies.qdrant ?? getQdrantClient();
+    const collectionName = dependencies.collectionName ?? getQdrantCollectionName();
     try {
       await qdrant.deleteCollection(collectionName);
     } catch (error) {
-      const message = error instanceof Error ? error.message.toLowerCase() : "";
-      if (!message.includes("not found")) {
+      if (!isQdrantCollectionNotFound(error)) {
         throw error;
       }
     }
-    resetQdrantCollectionCache();
+    (dependencies.resetQdrantCollectionCache ?? resetQdrantCollectionCache)();
   }
 
-  await Promise.all([
-    VectorIndexModel.deleteMany({}),
-    TextChunkModel.deleteMany({}),
-    IngestedFileModel.deleteMany({}),
-  ]);
+  await clearRecords();
 
   return {
     deletedFiles: fileCount,

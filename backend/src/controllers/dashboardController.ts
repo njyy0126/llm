@@ -5,63 +5,70 @@ import {
   getTopSkillGaps,
 } from "../services/dashboard/dashboardService";
 
-export const dashboardSummaryController = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const days = Array.isArray(req.query.days) ? req.query.days[0] : req.query.days;
-    const fileType = Array.isArray(req.query.fileType) ? req.query.fileType[0] : req.query.fileType;
-
-    const data = await getDashboardSummary({
-      days: typeof days === "string" ? days : undefined,
-      fileType: typeof fileType === "string" ? fileType : undefined,
-    });
-    console.log(`[dashboard] summary days=${days ?? "default"} fileType=${fileType ?? "all"}`);
-    res.status(200).json({
-      message: "Dashboard summary fetched.",
-      data,
-    });
-  } catch (error) {
-    next(error);
-  }
+const getQueryValue = (value: unknown): string | undefined => {
+  const firstValue = Array.isArray(value) ? value[0] : value;
+  return typeof firstValue === "string" ? firstValue : undefined;
 };
 
-export const dashboardMatchTrendController = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const days = Array.isArray(req.query.days) ? req.query.days[0] : req.query.days;
-    const data = await getMatchTrend({
-      days: typeof days === "string" ? days : undefined,
-    });
-    res.status(200).json({
-      message: "Match trend fetched.",
-      data,
-    });
-  } catch (error) {
-    next(error);
-  }
+type DashboardServiceDependencies = {
+  getDashboardSummary: typeof getDashboardSummary;
+  getMatchTrend: typeof getMatchTrend;
+  getTopSkillGaps: typeof getTopSkillGaps;
 };
 
-export const dashboardSkillGapsController = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const limit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
-    const data = await getTopSkillGaps({
-      limit: typeof limit === "string" ? limit : undefined,
-    });
-    res.status(200).json({
-      message: "Top skill gaps fetched.",
-      data,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+export const createDashboardControllers = (
+  services: DashboardServiceDependencies = {
+    getDashboardSummary,
+    getMatchTrend,
+    getTopSkillGaps,
+  },
+) => ({
+  summary: async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const days = getQueryValue(req.query.days);
+      const fileType = getQueryValue(req.query.fileType);
+      const data = await services.getDashboardSummary({ days, fileType });
+      console.log(`[dashboard] summary days=${days ?? "default"} fileType=${fileType ?? "all"}`);
+      res.status(200).json({
+        message: "Dashboard summary fetched.",
+        data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  matchTrend: async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const days = getQueryValue(req.query.days);
+      const fileType = getQueryValue(req.query.fileType);
+      const data = await services.getMatchTrend({ days, fileType });
+      res.status(200).json({
+        message: "Match trend fetched.",
+        data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  skillGaps: async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limit = getQueryValue(req.query.limit);
+      const fileType = getQueryValue(req.query.fileType);
+      const data = await services.getTopSkillGaps({ limit, fileType });
+      res.status(200).json({
+        message: "Top skill gaps fetched.",
+        data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+});
+
+const dashboardControllers = createDashboardControllers();
+
+export const dashboardSummaryController = dashboardControllers.summary;
+export const dashboardMatchTrendController = dashboardControllers.matchTrend;
+export const dashboardSkillGapsController = dashboardControllers.skillGaps;

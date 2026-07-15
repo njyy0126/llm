@@ -34,13 +34,7 @@ const envSchema = z.object({
   CHAT_MIN_RELEVANCE_SCORE: z.coerce.number().min(0).max(1).default(0.25),
   CHAT_FALLBACK_TO_EXTRACTIVE: booleanFromString.default(false),
   M5_ANALYSIS_DEFAULT_TOPK: z.coerce.number().int().positive().max(20).default(8),
-  POWERBI_MODE: z.enum(["public", "secure"]).default("public"),
-  POWERBI_EMBED_URL: z.string().optional(),
-  POWERBI_REPORT_ID: z.string().optional(),
-  POWERBI_TENANT_ID: z.string().optional(),
-  POWERBI_CLIENT_ID: z.string().optional(),
-  POWERBI_CLIENT_SECRET: z.string().optional(),
-  POWERBI_WORKSPACE_ID: z.string().optional(),
+  JD_REQUIREMENT_EXTRACTION_TIMEOUT_MS: z.coerce.number().int().positive().max(60000).default(15000),
 });
 
 export const env = envSchema.parse(process.env);

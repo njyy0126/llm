@@ -4,6 +4,28 @@ import { env } from "../../config/env";
 let client: QdrantClient | null = null;
 let cachedVectorSize: number | null = null;
 
+type QdrantCollectionClient = {
+  getCollection: (collectionName: string) => Promise<{
+    config?: { params?: { vectors?: { size: number } | string } };
+  }>;
+  createCollection: (
+    collectionName: string,
+    config: { vectors: { size: number; distance: "Cosine" } },
+  ) => Promise<unknown>;
+};
+
+type EnsureQdrantCollectionDependencies = {
+  qdrant?: QdrantCollectionClient;
+  collectionName?: string;
+};
+
+export const isQdrantCollectionNotFound = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "status" in error &&
+  typeof (error as { status?: unknown }).status === "number" &&
+  (error as { status: number }).status === 404;
+
 const getClient = (): QdrantClient => {
   if (!client) {
     client = new QdrantClient({
@@ -16,9 +38,12 @@ const getClient = (): QdrantClient => {
 
 export const getQdrantCollectionName = (): string => env.QDRANT_COLLECTION;
 
-export const ensureQdrantCollection = async (vectorSize: number): Promise<void> => {
-  const qdrant = getClient();
-  const collectionName = getQdrantCollectionName();
+export const ensureQdrantCollection = async (
+  vectorSize: number,
+  dependencies: EnsureQdrantCollectionDependencies = {},
+): Promise<void> => {
+  const qdrant = dependencies.qdrant ?? (getClient() as unknown as QdrantCollectionClient);
+  const collectionName = dependencies.collectionName ?? getQdrantCollectionName();
 
   if (cachedVectorSize && cachedVectorSize === vectorSize) {
     return;
@@ -37,8 +62,7 @@ export const ensureQdrantCollection = async (vectorSize: number): Promise<void> 
       );
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("mismatch")) {
+    if (!isQdrantCollectionNotFound(error)) {
       throw error;
     }
     await qdrant.createCollection(collectionName, {

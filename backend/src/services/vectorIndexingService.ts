@@ -10,9 +10,23 @@ import {
   ensureQdrantCollection,
   getQdrantClient,
   getQdrantCollectionName,
+  isQdrantCollectionNotFound,
   resetQdrantCollectionCache,
 } from "./vector/qdrantClient";
 import { AppError } from "../utils/AppError";
+
+type QdrantDeletionClient = {
+  deleteCollection: (collectionName: string) => Promise<unknown>;
+};
+
+type ClearAllVectorIndexesDependencies = {
+  vectorDbMode?: "qdrant" | "mongo";
+  qdrant?: QdrantDeletionClient;
+  collectionName?: string;
+  getExistingIndexCount?: () => Promise<number>;
+  clearRecords?: () => Promise<unknown>;
+  resetQdrantCollectionCache?: () => void;
+};
 
 const fileIdSchema = z.object({
   fileId: z.string().trim().min(1),
@@ -202,38 +216,47 @@ export const getIndexingStatusSummary = async () => {
   };
 };
 
-export const clearAllVectorIndexes = async () => {
+export const clearAllVectorIndexes = async (
+  dependencies: ClearAllVectorIndexesDependencies = {},
+) => {
+  const vectorDbMode = dependencies.vectorDbMode ?? env.VECTOR_DB_MODE;
   const collectionName =
-    env.VECTOR_DB_MODE === "qdrant" ? getQdrantCollectionName() : "mongo_vectors";
-  const existingIndexCount = await VectorIndexModel.countDocuments();
+    dependencies.collectionName ??
+    (vectorDbMode === "qdrant" ? getQdrantCollectionName() : "mongo_vectors");
+  const getExistingIndexCount =
+    dependencies.getExistingIndexCount ?? (() => VectorIndexModel.countDocuments());
+  const clearRecords =
+    dependencies.clearRecords ??
+    (() =>
+      Promise.all([
+        VectorIndexModel.deleteMany({}),
+        IngestedFileModel.updateMany(
+          {},
+          {
+            $set: { indexedChunkCount: 0, indexingStatus: "not_started" },
+            $unset: { lastIndexedAt: 1 },
+          },
+        ),
+      ]));
+  const existingIndexCount = await getExistingIndexCount();
 
-  if (env.VECTOR_DB_MODE === "qdrant") {
-    const qdrant = getQdrantClient();
+  if (vectorDbMode === "qdrant") {
+    const qdrant = dependencies.qdrant ?? getQdrantClient();
     try {
       await qdrant.deleteCollection(collectionName);
     } catch (error) {
-      const message = error instanceof Error ? error.message.toLowerCase() : "";
-      if (!message.includes("not found")) {
+      if (!isQdrantCollectionNotFound(error)) {
         throw error;
       }
     }
-    resetQdrantCollectionCache();
+    (dependencies.resetQdrantCollectionCache ?? resetQdrantCollectionCache)();
   }
 
-  await Promise.all([
-    VectorIndexModel.deleteMany({}),
-    IngestedFileModel.updateMany(
-      {},
-      {
-        $set: { indexedChunkCount: 0, indexingStatus: "not_started" },
-        $unset: { lastIndexedAt: 1 },
-      },
-    ),
-  ]);
+  await clearRecords();
 
   return {
     clearedIndexRecords: existingIndexCount,
-    vectorDbMode: env.VECTOR_DB_MODE,
+    vectorDbMode,
     collectionName,
   };
 };
